@@ -1,0 +1,96 @@
+# claude-tray
+
+A GNOME system tray indicator for [Claude Code](https://claude.ai/code) on Ubuntu — shows live activity in the top bar so you always know what Claude is doing.
+
+Inspired by [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) for macOS, reimplemented for Linux/GNOME in Python.
+
+> **Unofficial community project.** Not affiliated with or endorsed by Anthropic.
+
+---
+
+## What it shows
+
+| State | Appearance |
+|---|---|
+| Claude is working | Orange spinner + verb + elapsed timer (e.g. `⣾ Editing 0:12`) |
+| Awaiting your input or permission | Yellow dot + label (e.g. `● Waiting for you`) |
+| Idle | Dim glyph `✦` |
+
+Verbs shown while working: Thinking, Editing, Writing, Reading, Running command, Searching, Browsing web, Planning, Delegating, and more.
+
+## Requirements
+
+- Ubuntu with GNOME (22.04 or later recommended)
+- The **ubuntu-appindicators** GNOME extension (pre-installed on Ubuntu)
+- Python 3
+- [Claude Code](https://claude.ai/code) installed and in `$PATH`
+
+## Install
+
+```bash
+git clone https://github.com/YOUR_USERNAME/claude-tray.git
+cd claude-tray
+./install.sh
+```
+
+`install.sh` does the following (non-destructively, safe to re-run):
+
+1. Installs missing apt packages: `python3-gi`, `gir1.2-gtk-3.0`, `gir1.2-ayatanaappindicator3-0.1`, `python3-pil` (only those that are missing, requires sudo).
+2. Enables the `ubuntu-appindicators` GNOME extension if available.
+3. Copies `hook.py` and `tray.py` to `~/.claude/statusbar/`.
+4. Registers Claude Code hooks in `~/.claude/settings.json`, first writing a one-time backup to `~/.claude/settings.json.bak-claude-tray`. Existing hooks from other tools are preserved.
+5. Adds a GNOME autostart entry so the tray starts on login.
+6. Launches the tray immediately.
+
+The tray icon will appear in your top bar. It activates on your next Claude Code prompt or tool use.
+
+## Uninstall
+
+```bash
+./uninstall.sh
+```
+
+Stops the tray, removes the hooks from `~/.claude/settings.json`, removes the autostart entry, and deletes the installed scripts and state files. The `settings.json` backup is left in place. Installed apt packages are not removed.
+
+## How it works
+
+Claude Code supports lifecycle hooks that run external commands at key moments. `install.sh` registers five hooks (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`) that each call `hook.py`, which maps the event and tool name to a status label and writes it atomically to `~/.claude/statusbar/state.json`.
+
+`tray.py` polls that file every 200 ms and re-renders the tray icon only when the displayed status changes. Because GNOME's AppIndicator extension caches icons by name and ignores text labels set via the API, the status text is drawn directly into a PNG with Pillow and passed as the icon image. The icon filename alternates between two names on each change to force a refresh.
+
+## Troubleshooting
+
+**Icon does not appear in the top bar**
+
+- Make sure the `ubuntu-appindicators` extension is enabled:
+  ```bash
+  gnome-extensions enable ubuntu-appindicators@ubuntu.com
+  ```
+  You can also check it in the GNOME Extensions app.
+- On X11: press `Alt+F2`, type `r`, press Enter to restart the GNOME shell.
+- On Wayland: log out and log back in.
+
+**Checking logs**
+
+```bash
+cat ~/.claude/statusbar/tray.log
+```
+
+**Status is stale / stuck**
+
+A running state older than 15 minutes is automatically treated as idle to handle cases where a hook was not called on exit.
+
+**Restarting the tray manually**
+
+```bash
+pkill -f ~/.claude/statusbar/tray.py
+python3 ~/.claude/statusbar/tray.py &
+```
+
+## Credits
+
+Inspired by [m1ckc3s/claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) — the macOS menu bar equivalent.
+
+## License
+
+MIT

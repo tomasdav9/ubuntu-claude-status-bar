@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+render/
+state.json
+tray.log
+*.bak-claude-tray
