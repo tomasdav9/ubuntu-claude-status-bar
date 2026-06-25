@@ -28,11 +28,10 @@ FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 TICK_MS = 200
 # Claude Code fires NO hook when the user interrupts with ESC, so a busy state
-# can otherwise hang forever. We fall back to a liveness signal: the most recent
-# of the state timestamp and the transcript file's mtime (Claude streams into the
-# transcript while it writes). If that goes quiet past these thresholds, idle.
-STALE_THINK = 12   # thinking: streaming keeps the transcript fresh; ESC stops it
-STALE_TOOL = 60    # tool: no heartbeat while a tool runs, so allow long commands
+# would otherwise hang forever. Fall back to staleness: if the state timestamp
+# (refreshed by every hook) goes quiet past these thresholds, return to idle.
+STALE_THINK = 20   # thinking: no tool running; cleared soon after an interrupt
+STALE_TOOL = 60    # tool: no hook fires mid-tool, so allow long commands to run
 SPINNER = "⣾⣽⣻⢿⡿⣟⣯⣷"
 
 H = 44                 # render height in px (panel scales it to bar height;
@@ -83,10 +82,17 @@ class Tray:
         menu.show_all()
         self.ind.set_menu(menu)
 
-        self.frame = 0
+        # A reusable fully transparent icon used to "flush" the panel slot when the
+        # icon shrinks, so GNOME reclaims the vacated width instead of leaving a
+        # ghost of the previous wider frame behind.
+        Image.new("RGBA", (1, H), (0, 0, 0, 0)).save(
+            os.path.join(RENDER_DIR, "blank.png"))
+
         self.counter = 0
-        self.recent = []  # recently written icon files, for cleanup
+        self.recent = []   # recently written icon files, for cleanup
         self.last_sig = None
+        self.last_w = 0    # width of the last icon shown
+        self.pending = None  # icon name to apply on the next tick (after a flush)
         self.tick()
         GLib.timeout_add(TICK_MS, self.tick)
 
@@ -130,43 +136,51 @@ class Tray:
                 os.remove(self.recent.pop(0))
             except OSError:
                 pass
-        return name
+        return name, width
 
     def tick(self):
-        state, label, started, ts, transcript = self.read_state()
+        # Apply an icon deferred from a flush on the previous tick.
+        if self.pending:
+            self.ind.set_icon_full(self.pending, "Claude")
+            self.pending = None
+            return True
+
+        state, label, started, ts, _ = self.read_state()
         now = time.time()
         if state in ("thinking", "tool") and ts:
-            live = ts
-            try:
-                live = max(live, os.path.getmtime(transcript))
-            except OSError:
-                pass
             limit = STALE_THINK if state == "thinking" else STALE_TOOL
-            if now - live > limit:
+            if now - ts > limit:
                 state = "idle"
 
         if state in ("thinking", "tool"):
-            self.frame = (self.frame + 1) % len(SPINNER)
+            # Advance the spinner once per second so the icon changes (and GNOME
+            # crossfades) at most ~once per second instead of every tick.
+            glyph = SPINNER[int(now) % len(SPINNER)]
             elapsed = fmt(now - started) if started else ""
             text = f"{label} {elapsed}".strip()
-            glyph, grgb, trgb = SPINNER[self.frame], CLAUDE_ORANGE, WHITE
+            grgb, trgb = CLAUDE_ORANGE, WHITE
             self.status_item.set_label(f"Claude: {text}")
         elif state in ("waiting", "permission"):
-            text = label or "needs you"
-            glyph, grgb, trgb = "●", YELLOW, YELLOW
+            glyph, text, grgb, trgb = "●", label or "needs you", YELLOW, YELLOW
             self.status_item.set_label(f"Claude: {label or 'awaiting input'}")
         else:
-            text = ""
-            glyph, grgb, trgb = "✦", DIM, DIM
+            glyph, text, grgb, trgb = "✦", "", DIM, DIM
             self.status_item.set_label("Claude: idle")
 
-        # Only redraw/swap the icon when what's shown actually changes. The GNOME
-        # appindicator extension crossfades on every icon-name change, so swapping
-        # each tick would leave a faint ghost of the previous frame behind.
+        # Only redraw when the displayed content changes (GNOME crossfades on every
+        # icon change, so needless swaps leave a faint ghost of the previous frame).
         sig = (glyph, grgb, text, trgb)
         if sig != self.last_sig:
             self.last_sig = sig
-            self.ind.set_icon_full(self.render(glyph, grgb, text, trgb), "Claude")
+            name, w = self.render(glyph, grgb, text, trgb)
+            if w < self.last_w - 6:
+                # Shrinking: blank the slot this tick, apply the real icon next
+                # tick, so GNOME fully reclaims the width with no leftover ghost.
+                self.ind.set_icon_full("blank", "Claude")
+                self.pending = name
+            else:
+                self.ind.set_icon_full(name, "Claude")
+            self.last_w = w
         return True
 
 
