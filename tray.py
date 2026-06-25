@@ -93,6 +93,7 @@ class Tray:
         self.last_sig = None
         self.last_w = 0    # width of the last icon shown
         self.pending = None  # icon name to apply on the next tick (after a flush)
+        self.shown = True  # whether the indicator is currently visible
         self.tick()
         GLib.timeout_add(TICK_MS, self.tick)
 
@@ -152,6 +153,21 @@ class Tray:
             if now - ts > limit:
                 state = "idle"
 
+        if state not in ("thinking", "tool", "waiting", "permission"):
+            # Idle: hide the indicator entirely. Drawing a static idle glyph left a
+            # GNOME ghost of the previous wider frame; a hidden indicator can't.
+            self.status_item.set_label("Claude: idle")
+            if self.shown:
+                self.ind.set_status(AppIndicator.IndicatorStatus.PASSIVE)
+                self.shown = False
+                self.last_sig = None
+                self.last_w = 0
+            return True
+
+        if not self.shown:
+            self.ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+            self.shown = True
+
         if state in ("thinking", "tool"):
             # Advance the spinner once per second so the icon changes (and GNOME
             # crossfades) at most ~once per second instead of every tick.
@@ -160,12 +176,9 @@ class Tray:
             text = f"{label} {elapsed}".strip()
             grgb, trgb = CLAUDE_ORANGE, WHITE
             self.status_item.set_label(f"Claude: {text}")
-        elif state in ("waiting", "permission"):
+        else:  # waiting / permission
             glyph, text, grgb, trgb = "●", label or "needs you", YELLOW, YELLOW
             self.status_item.set_label(f"Claude: {label or 'awaiting input'}")
-        else:
-            glyph, text, grgb, trgb = "✦", "", DIM, DIM
-            self.status_item.set_label("Claude: idle")
 
         # Only redraw when the displayed content changes (GNOME crossfades on every
         # icon change, so needless swaps leave a faint ghost of the previous frame).
