@@ -54,9 +54,11 @@ Stops the tray, removes the hooks from `~/.claude/settings.json`, removes the au
 
 ## How it works
 
-Claude Code supports lifecycle hooks that run external commands at key moments. `install.sh` registers five hooks (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`) that each call `hook.py`, which maps the event and tool name to a status label and writes it atomically to `~/.claude/statusbar/state.json`.
+Claude Code supports lifecycle hooks that run external commands at key moments. `install.sh` registers hooks for `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Notification`, `Stop`, `StopFailure`, and `SessionEnd`. Each calls `hook.py`, which maps the event and tool name to a status label and writes it atomically to `~/.claude/statusbar/state.json`.
 
-`tray.py` polls that file every 200 ms and re-renders the tray icon only when the displayed status changes. Because GNOME's AppIndicator extension caches icons by name and ignores text labels set via the API, the status text is drawn directly into a PNG with Pillow and passed as the icon image. The icon filename alternates between two names on each change to force a refresh.
+`tray.py` polls that file every 200 ms and re-renders the tray icon only when the displayed status changes. Because GNOME's AppIndicator extension caches icons by name and ignores text labels set via the API, the status text is drawn directly into a PNG with Pillow and passed as the icon image. A unique icon filename is used on each change to force a clean refresh (reusing a name shows GNOME's cached pixmap).
+
+Claude Code does **not** fire any hook when you interrupt it with `ESC`, so the tray also uses a liveness fallback: while busy it watches the session transcript's modification time (Claude streams into it as it writes). If activity goes quiet — about 12 s while thinking, 60 s during a tool — the indicator returns to idle on its own.
 
 ## Troubleshooting
 
@@ -78,7 +80,7 @@ cat ~/.claude/statusbar/tray.log
 
 **Status is stale / stuck**
 
-A running state older than 15 minutes is automatically treated as idle to handle cases where a hook was not called on exit.
+If a busy state ever hangs (e.g. you interrupted Claude with `ESC`), the tray clears it automatically once activity goes quiet — roughly 12 s after a thinking state and 60 s during a tool. You can tune `STALE_THINK` / `STALE_TOOL` at the top of `tray.py`.
 
 **Restarting the tray manually**
 

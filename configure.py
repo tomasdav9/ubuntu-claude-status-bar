@@ -20,8 +20,11 @@ EVENTS = [
     ("UserPromptSubmit", "prompt", None),
     ("PreToolUse", "pre", ""),
     ("PostToolUse", "post", ""),
+    ("PostToolUseFailure", "postfail", ""),
     ("Notification", "notify", None),
     ("Stop", "stop", None),
+    ("StopFailure", "stopfail", None),
+    ("SessionEnd", "end", None),
 ]
 
 

@@ -27,7 +27,12 @@ RENDER_DIR = os.path.join(DIR, "render")
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 TICK_MS = 200
-STALE_SEC = 900  # stale running state -> treat as idle
+# Claude Code fires NO hook when the user interrupts with ESC, so a busy state
+# can otherwise hang forever. We fall back to a liveness signal: the most recent
+# of the state timestamp and the transcript file's mtime (Claude streams into the
+# transcript while it writes). If that goes quiet past these thresholds, idle.
+STALE_THINK = 12   # thinking: streaming keeps the transcript fresh; ESC stops it
+STALE_TOOL = 60    # tool: no heartbeat while a tool runs, so allow long commands
 SPINNER = "⣾⣽⣻⢿⡿⣟⣯⣷"
 
 H = 44                 # render height in px (panel scales it to bar height;
@@ -79,7 +84,8 @@ class Tray:
         self.ind.set_menu(menu)
 
         self.frame = 0
-        self.toggle = 0
+        self.counter = 0
+        self.recent = []  # recently written icon files, for cleanup
         self.last_sig = None
         self.tick()
         GLib.timeout_add(TICK_MS, self.tick)
@@ -88,9 +94,10 @@ class Tray:
         try:
             d = json.load(open(STATE_FILE))
             return (d.get("state", "idle"), d.get("label", ""),
-                    float(d.get("startedAt", 0)), float(d.get("ts", 0)))
+                    float(d.get("startedAt", 0)), float(d.get("ts", 0)),
+                    d.get("transcript", ""))
         except Exception:
-            return "idle", "", 0.0, 0.0
+            return "idle", "", 0.0, 0.0, ""
 
     def render(self, glyph, glyph_rgb, text, text_rgb):
         """Draw 'glyph  text' onto a transparent PNG, return its icon name."""
@@ -109,16 +116,34 @@ class Tray:
         if text:
             d.text((x, H / 2), text, font=_font, fill=text_rgb, anchor="lm")
 
-        self.toggle ^= 1
-        name = f"claude{self.toggle}"
-        img.save(os.path.join(RENDER_DIR, name + ".png"))
+        # Use a unique name every time: the GNOME appindicator extension caches
+        # icons by name, so reusing a name shows the stale cached pixmap (e.g. a
+        # wide active frame lingering behind a narrow idle glyph). A fresh name
+        # forces a clean reload and lets the panel reclaim vacated width.
+        self.counter += 1
+        name = f"c{self.counter}"
+        path = os.path.join(RENDER_DIR, name + ".png")
+        img.save(path)
+        self.recent.append(path)
+        while len(self.recent) > 3:
+            try:
+                os.remove(self.recent.pop(0))
+            except OSError:
+                pass
         return name
 
     def tick(self):
-        state, label, started, ts = self.read_state()
+        state, label, started, ts, transcript = self.read_state()
         now = time.time()
-        if state in ("thinking", "tool") and ts and now - ts > STALE_SEC:
-            state = "idle"
+        if state in ("thinking", "tool") and ts:
+            live = ts
+            try:
+                live = max(live, os.path.getmtime(transcript))
+            except OSError:
+                pass
+            limit = STALE_THINK if state == "thinking" else STALE_TOOL
+            if now - live > limit:
+                state = "idle"
 
         if state in ("thinking", "tool"):
             self.frame = (self.frame + 1) % len(SPINNER)
