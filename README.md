@@ -28,8 +28,8 @@ Verbs shown while working: Thinking, Editing, Writing, Reading, Running command,
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/claude-tray.git
-cd claude-tray
+git clone https://github.com/tomasdav9/ubuntu-claude-status-bar.git
+cd ubuntu-claude-status-bar
 ./install.sh
 ```
 
@@ -90,6 +90,12 @@ python3 ~/.claude/statusbar/tray.py &
 ## Credits
 
 Inspired by [m1ckc3s/claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) — the macOS menu bar equivalent.
+
+## Trademark / not affiliated
+
+This is an unofficial, open-source side project. It is not affiliated with, endorsed by, or sponsored by Anthropic. "Claude" and the Claude spark logo are trademarks of Anthropic, used here nominatively. This project is MIT licensed, but that covers the source code only and conveys no rights to Anthropic's trademarks or brand.
+
+If I'm violating or impeding your trademark, DM me on X ([@tomm_david](https://x.com/tomm_david)) and I'll rename this repo. This is a free side project; I'm not monetizing it.
 
 ## License
 
