@@ -23,7 +23,21 @@ from gi.repository import AyatanaAppIndicator3 as AppIndicator  # noqa: E402
 
 DIR = os.path.expanduser("~/.claude/statusbar")
 STATE_FILE = os.path.join(DIR, "state.json")
+CONFIG_FILE = os.path.join(DIR, "config.json")
 RENDER_DIR = os.path.join(DIR, "render")
+LOG_FILE = os.path.join(DIR, "tray.log")
+
+DEBUG = os.environ.get("CLAUDE_TRAY_DEBUG") == "1"
+
+
+def log(msg):
+    if not DEBUG:
+        return
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(f"{time.time():.3f} {msg}\n")
+    except OSError:
+        pass
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 TICK_MS = 200
@@ -60,27 +74,28 @@ def _w(text):
     return _font.getbbox(text)[2] if text else 0
 
 
+def load_config():
+    try:
+        return json.load(open(CONFIG_FILE))
+    except Exception:
+        return {}
+
+
+def save_config(cfg):
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(cfg, f, indent=2)
+            f.write("\n")
+    except OSError:
+        pass
+
+
 class Tray:
     def __init__(self):
         os.makedirs(RENDER_DIR, exist_ok=True)
-        self.ind = AppIndicator.Indicator.new(
-            "claude-statusbar", "",
-            AppIndicator.IndicatorCategory.APPLICATION_STATUS,
-        )
-        self.ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-        self.ind.set_icon_theme_path(RENDER_DIR)
-        self.ind.set_title("Claude")
-
-        menu = Gtk.Menu()
-        self.status_item = Gtk.MenuItem(label="Claude: idle")
-        self.status_item.set_sensitive(False)
-        menu.append(self.status_item)
-        menu.append(Gtk.SeparatorMenuItem())
-        quit_item = Gtk.MenuItem(label="Quit")
-        quit_item.connect("activate", Gtk.main_quit)
-        menu.append(quit_item)
-        menu.show_all()
-        self.ind.set_menu(menu)
+        self.config = load_config()
+        self.show_text = self.config.get("show_text", True)
 
         # A reusable fully transparent icon used to "flush" the panel slot when the
         # icon shrinks, so GNOME reclaims the vacated width instead of leaving a
@@ -90,12 +105,70 @@ class Tray:
 
         self.counter = 0
         self.recent = []   # recently written icon files, for cleanup
+        self.ind_seq = 0   # bumped to give each rebuilt indicator a fresh id
+        self.ind = None
+        self.build_indicator()
+
         self.last_sig = None
         self.last_w = 0    # width of the last icon shown
         self.pending = None  # icon name to apply on the next tick (after a flush)
         self.shown = True  # whether the indicator is currently visible
         self.tick()
         GLib.timeout_add(TICK_MS, self.tick)
+
+    def build_indicator(self):
+        """Create (or recreate) the AppIndicator from scratch.
+
+        GNOME's appindicator extension reuses the icon actor across icon swaps and
+        won't reliably resize it when the icon's width changes a lot (e.g. toggling
+        between the wide text frame and the narrow dot) — it leaves a ghost of the
+        old frame. No redraw/PASSIVE trick clears that. Building a brand-new
+        indicator with a fresh id forces the extension to drop the stale actor and
+        start with a clean slot, so a mode switch never ghosts.
+        """
+        old = self.ind
+        self.ind_seq += 1
+        self.ind = AppIndicator.Indicator.new(
+            f"claude-statusbar-{self.ind_seq}", "",
+            AppIndicator.IndicatorCategory.APPLICATION_STATUS,
+        )
+        self.ind.set_icon_theme_path(RENDER_DIR)
+        self.ind.set_title("Claude")
+
+        menu = Gtk.Menu()
+        self.status_item = Gtk.MenuItem(label="Claude: idle")
+        self.status_item.set_sensitive(False)
+        menu.append(self.status_item)
+        menu.append(Gtk.SeparatorMenuItem())
+        text_item = Gtk.CheckMenuItem(label="Show text")
+        text_item.set_active(self.show_text)
+        text_item.connect("toggled", self.on_toggle_text)
+        menu.append(text_item)
+        menu.append(Gtk.SeparatorMenuItem())
+        quit_item = Gtk.MenuItem(label="Quit")
+        quit_item.connect("activate", Gtk.main_quit)
+        menu.append(quit_item)
+        menu.show_all()
+        self.ind.set_menu(menu)
+        self.ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+
+        if old is not None:
+            # Retire the previous indicator so only the fresh one remains.
+            old.set_status(AppIndicator.IndicatorStatus.PASSIVE)
+        log(f"build_indicator id=claude-statusbar-{self.ind_seq} show_text={self.show_text}")
+
+    def on_toggle_text(self, item):
+        self.show_text = item.get_active()
+        self.config["show_text"] = self.show_text
+        save_config(self.config)
+        # Rebuild the indicator from scratch: switching modes changes the icon
+        # width drastically and GNOME leaves a ghost of the old-width actor on the
+        # existing indicator. A fresh indicator has no stale actor to ghost.
+        self.pending = None
+        self.last_sig = None
+        self.last_w = 0
+        self.shown = True
+        self.build_indicator()
 
     def read_state(self):
         try:
@@ -105,6 +178,36 @@ class Tray:
                     d.get("transcript", ""))
         except Exception:
             return "idle", "", 0.0, 0.0, ""
+
+    def render_dot(self, rgb, spin):
+        """Icon-only mode: a centered disc (spin=False) or a rotating ring
+        (spin=True) so the single-glyph version doesn't look like stray noise."""
+        d_px = int(H * 0.5)
+        m = (H - d_px) / 2
+        box = (m, m, m + d_px, m + d_px)
+        img = Image.new("RGBA", (H, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        if spin:
+            start = (time.time() * 300) % 360
+            draw.arc(box, start, start + 270, fill=rgb, width=max(3, d_px // 6))
+        else:
+            draw.ellipse(box, fill=rgb)
+        return self._save(img, H)
+
+    def _save(self, img, width):
+        # Unique name every time: GNOME caches icons by name, so reusing one shows
+        # the stale pixmap. A fresh name forces a clean reload.
+        self.counter += 1
+        name = f"c{self.counter}"
+        path = os.path.join(RENDER_DIR, name + ".png")
+        img.save(path)
+        self.recent.append(path)
+        while len(self.recent) > 3:
+            try:
+                os.remove(self.recent.pop(0))
+            except OSError:
+                pass
+        return name, width
 
     def render(self, glyph, glyph_rgb, text, text_rgb):
         """Draw 'glyph  text' onto a transparent PNG, return its icon name."""
@@ -123,25 +226,12 @@ class Tray:
         if text:
             d.text((x, H / 2), text, font=_font, fill=text_rgb, anchor="lm")
 
-        # Use a unique name every time: the GNOME appindicator extension caches
-        # icons by name, so reusing a name shows the stale cached pixmap (e.g. a
-        # wide active frame lingering behind a narrow idle glyph). A fresh name
-        # forces a clean reload and lets the panel reclaim vacated width.
-        self.counter += 1
-        name = f"c{self.counter}"
-        path = os.path.join(RENDER_DIR, name + ".png")
-        img.save(path)
-        self.recent.append(path)
-        while len(self.recent) > 3:
-            try:
-                os.remove(self.recent.pop(0))
-            except OSError:
-                pass
-        return name, width
+        return self._save(img, width)
 
     def tick(self):
         # Apply an icon deferred from a flush on the previous tick.
         if self.pending:
+            log(f"pending apply icon={self.pending}")
             self.ind.set_icon_full(self.pending, "Claude")
             self.pending = None
             return True
@@ -167,6 +257,7 @@ class Tray:
         if not self.shown:
             self.ind.set_status(AppIndicator.IndicatorStatus.ACTIVE)
             self.shown = True
+            log("reactivate -> ACTIVE")
 
         if state in ("thinking", "tool"):
             # Advance the spinner once per second so the icon changes (and GNOME
@@ -180,18 +271,30 @@ class Tray:
             glyph, text, grgb, trgb = "●", label or "needs you", YELLOW, YELLOW
             self.status_item.set_label(f"Claude: {label or 'awaiting input'}")
 
-        # Only redraw when the displayed content changes (GNOME crossfades on every
-        # icon change, so needless swaps leave a faint ghost of the previous frame).
-        sig = (glyph, grgb, text, trgb)
+        # Icon-only mode: drop the drawn text (it stays in the menu) and show a
+        # clean disc/ring instead of the bare glyph, which looked like stray noise.
+        spin = state in ("thinking", "tool")
+        if not self.show_text:
+            # The ring animates, so redraw a few times a second while working; the
+            # static waiting disc only redraws on a state (colour) change.
+            sig = ("dot", grgb, spin, int(now * 4) if spin else 0)
+        else:
+            sig = (glyph, grgb, text, trgb)
+
         if sig != self.last_sig:
             self.last_sig = sig
-            name, w = self.render(glyph, grgb, text, trgb)
+            if not self.show_text:
+                name, w = self.render_dot(grgb, spin)
+            else:
+                name, w = self.render(glyph, grgb, text, trgb)
             if w < self.last_w - 6:
                 # Shrinking: blank the slot this tick, apply the real icon next
                 # tick, so GNOME fully reclaims the width with no leftover ghost.
+                log(f"shrink {self.last_w}->{w} blank+pending={name} show_text={self.show_text}")
                 self.ind.set_icon_full("blank", "Claude")
                 self.pending = name
             else:
+                log(f"set icon={name} w={w} last_w={self.last_w} show_text={self.show_text}")
                 self.ind.set_icon_full(name, "Claude")
             self.last_w = w
         return True

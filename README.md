@@ -18,6 +18,8 @@ Inspired by [claude-status-bar](https://github.com/m1ckc3s/claude-status-bar) fo
 
 Verbs shown while working: Thinking, Editing, Writing, Reading, Running command, Searching, Browsing web, Planning, Delegating, and more.
 
+Right-click the tray icon for a menu. **Show text** toggles between the full label and an icon-only mode (just the spinner/dot, no verb or timer). The choice is saved to `~/.claude/statusbar/config.json`.
+
 ## Requirements
 
 - Ubuntu with GNOME (22.04 or later recommended)
